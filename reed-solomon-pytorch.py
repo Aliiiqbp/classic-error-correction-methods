@@ -2,56 +2,67 @@ import torch
 
 
 def gf2_add(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """Adds two binary numbers (GF(2))"""
-    return torch.logical_xor(a, b).to(torch.uint8)
-
-
-def gf2_mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """Multiplies two binary numbers (GF(2))"""
-    res = torch.zeros(len(a) + len(b) - 1, dtype=torch.uint8)
-    for i in range(len(a)):
-        if a[i] != 0:
-            res[i:i+len(b)] = gf2_add(res[i:i+len(b)], torch.logical_and(b, a[i]))
+    """
+    Add two polynomials in GF(2)
+    """
+    res = torch.zeros(max(a.shape[0], b.shape[0]), dtype=torch.uint8)
+    res[-a.shape[0]:] = a
+    res[-b.shape[0]:] ^= b
     return res
 
 
-def gf2_div(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """Divides two binary numbers (GF(2))"""
-    deg_a = gf2_deg(a)
-    deg_b = gf2_deg(b)
-    if deg_b == -1:
-        raise ZeroDivisionError("division by zero")
-    if deg_a < deg_b:
-        return torch.zeros(1, dtype=torch.uint8)
-    q = torch.zeros(deg_a - deg_b + 1, dtype=torch.uint8)
-    while deg_a >= deg_b:
-        d = torch.zeros(deg_a - deg_b + 1, dtype=torch.uint8)
-        d[deg_a - deg_b] = 1
-        q = gf2_add(q, d)
-        a = gf2_add(a, torch.cat([torch.zeros(deg_a - deg_b + 1, dtype=torch.uint8), gf2_mul(d, b[deg_b:])]))
-        deg_a = gf2_deg(a)
-    return q
+def gf2_mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """
+    Multiply two polynomials in GF(2)
+    """
+    res = torch.zeros(a.shape[0] + b.shape[0] - 1, dtype=torch.uint8)
+    for i in range(a.shape[0]):
+        for j in range(b.shape[0]):
+            res[i+j] ^= a[i] & b[j]
+    return res
 
 
-def gf2_deg(poly: torch.Tensor) -> int:
-    """Returns the degree of a binary polynomial over GF(2)"""
-    deg = len(poly) - 1
-    while deg >= 0 and poly[deg] == 0:
-        deg -= 1
-    return deg
+def gf2_div(a: torch.Tensor, b: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Divide two polynomials in GF(2)
+    """
+    a_deg = gf2_deg(a)
+    b_deg = gf2_deg(b)
+    q = torch.zeros(max(a_deg - b_deg + 1, 0), dtype=torch.uint8)
+    r = a.clone()
+    for i in range(a_deg - b_deg + 1):
+        coef = r[a_deg - i] // b[b_deg]
+        q[-i-1] = coef
+        r[a_deg - i - b_deg:a_deg - i + 1] ^= gf2_mul(b[::-1], torch.tensor([coef], dtype=torch.uint8))
+    return q, r
+
+
+def gf2_deg(a: torch.Tensor) -> int:
+    """
+    Calculate degree of a polynomial in GF(2)
+    """
+    for i in range(a.shape[0]-1, -1, -1):
+        if a[i] != 0:
+            return i
+    return -1
 
 
 def rs_encode(msg: torch.Tensor, n: int, k: int) -> torch.Tensor:
-    """Encodes a message using Reed-Solomon (binary)"""
+    """
+    Encode a message with Reed-Solomon
+    """
     gen_poly = torch.tensor([1], dtype=torch.uint8)
-    for i in range(k):
+    for i in range(n - k):
         gen_poly = gf2_mul(gen_poly, torch.tensor([1, 2**i], dtype=torch.uint8))
-    codeword = torch.cat([msg, torch.zeros(n-k, dtype=torch.uint8)])
-    for i in range(len(msg)):
-        coef = codeword[i]
+    msg_padded = torch.zeros(n - k + len(msg), dtype=torch.uint8)
+    msg_padded[-len(msg):] = msg
+    res = torch.zeros(n, dtype=torch.uint8)
+    for i in range(k):
+        coef = msg_padded[i]
         if coef != 0:
-            codeword[i:i+len(gen_poly)] = gf2_add(codeword[i:i+len(gen_poly)], gf2_mul(coef, gen_poly))
-    return codeword
+            res[i:i+len(gen_poly)] ^= gf2_mul(coef, gen_poly)
+    res[k:] = msg_padded[k:]
+    return res
 
 
 def rs_decode(codeword: torch.Tensor, n: int, k: int) -> torch.Tensor:
@@ -88,7 +99,7 @@ def rs_decode(codeword: torch.Tensor, n: int, k: int) -> torch.Tensor:
         x = torch.tensor([root], dtype=torch.uint8)
         y = codeword[k-1-i]
         if y != 0:
-            codeword[:k] = gf2_add(codeword[:k], gf2_mul(y, gf2_div(locator_poly, gf2_add(x, gen_poly))))
+            codeword[:k] = gf2_add(codeword[:k], gf2_mul(y, gf2_div(gf2_mul(locator_poly, x), gen_poly)))
     return codeword[:k]
 
 
@@ -96,15 +107,28 @@ def rs_decode(codeword: torch.Tensor, n: int, k: int) -> torch.Tensor:
 
 
 def rs_encode_binary(msg: torch.Tensor, n: int, k: int) -> torch.Tensor:
-    msg = msg.unsqueeze(0)
-    pad_size = n - k - (len(msg) % (n - k))
-    padded_msg = torch.cat([msg, torch.zeros(pad_size, dtype=torch.uint8)], dim=1)
-    chunks = torch.split(padded_msg, k, dim=1)
-    encoded_chunks = []
-    for chunk in chunks:
-        encoded_chunk = torch.cat([chunk, rs_encode(chunk, n, k)], dim=1)
-        encoded_chunks.append(encoded_chunk)
-    return torch.cat(encoded_chunks, dim=1)
+    # Reshape msg to a 2D tensor with shape (num_blocks, block_size)
+    block_size = n - k
+    num_blocks = (msg.shape[0] + block_size - 1) // block_size
+    padded_msg = torch.cat([msg, torch.zeros(num_blocks * block_size - msg.shape[0], dtype=torch.uint8)], dim=0)
+    msg_blocks = padded_msg.reshape(num_blocks, block_size)
+
+    # Generate generator polynomial
+    gen_poly = torch.tensor([1], dtype=torch.uint8)
+    for i in range(k):
+        gen_poly = gf2_mul(gen_poly, torch.tensor([1, gf2_exp(i)], dtype=torch.uint8))
+
+    # Compute remainder
+    codewords = []
+    for i in range(num_blocks):
+        msg_block = msg_blocks[i]
+        msg_poly = torch.cat([msg_block, torch.zeros(k - 1, dtype=torch.uint8)], dim=0)
+        remainder = gf2_poly_div(msg_poly, gen_poly)[1]
+        codeword = torch.cat([msg_block, remainder], dim=0)
+        codewords.append(codeword)
+
+    # Concatenate codewords into a single tensor
+    return torch.cat(codewords, dim=0)
 
 
 def rs_decode_binary(codeword: torch.Tensor, n: int, k: int) -> torch.Tensor:
@@ -167,8 +191,5 @@ print("Original message:", msg)
 print("Encoded message:", encoded_msg)
 print("Corrupted message:", corrupted_msg)
 print("Recovered message:", recovered_msg)
-
-
-
 
 
