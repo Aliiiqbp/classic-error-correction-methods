@@ -1,7 +1,7 @@
 import reedsolo
 
 # Define the message and number of symbols for error correction
-msg = b'\x12\x34\x56\x78\x9a\xbc\xde\xf0'
+msg = b'1001011'
 nsym = 5
 
 # Initialize the Reed-Solomon coder and encode the message
@@ -10,8 +10,9 @@ encoded = rs.encode(msg)
 
 # Simulate errors by flipping some of the bits in the encoded message
 corrupted = bytearray(encoded)
-corrupted[3] ^= 0b00001000
-corrupted[7] ^= 0b00100000
+print(corrupted)
+corrupted[3] ^= 1
+corrupted[7] ^= 1
 
 # Decode the corrupted message and correct errors
 decoded = rs.decode(corrupted)
