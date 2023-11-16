@@ -26,8 +26,8 @@ def show_binary_example():
     # Configurable parameters
     field = fieldmath.BinaryField(0x11D)
     generator = 0x02
-    msglen = 32
-    ecclen = 32 # 5
+    msglen = 8
+    ecclen = 5 # 5
     rs = reedsolomon.ReedSolomon(field, generator, msglen, ecclen)
 
     # Generate random message
